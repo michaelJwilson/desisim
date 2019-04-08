@@ -9,7 +9,7 @@ import numpy as np
 
 import astropy.table
 import astropy.time
-from astropy.io import fits
+from   astropy.io import fits
 import fitsio
 
 import desitarget
@@ -17,7 +17,7 @@ import desitarget.targetmask
 import desispec.io
 import desispec.io.util
 import desimodel.io
-from desimodel.focalplane import fiber_area_arcsec2
+from   desimodel.focalplane import fiber_area_arcsec2
 import desiutil.depend
 import desispec.interpolation
 import desisim.io
@@ -25,6 +25,7 @@ import desisim.specsim
 
 #- Reference observing conditions for each of dark, gray, bright
 reference_conditions = dict(DARK=dict(), GRAY=dict(), BRIGHT=dict())
+
 reference_conditions['DARK']['SEEING']  = 1.1
 reference_conditions['DARK']['EXPTIME'] = 1000
 reference_conditions['DARK']['AIRMASS'] = 1.0
@@ -48,6 +49,7 @@ reference_conditions['BRIGHT']['MOONSEP'] = 50
 
 for objtype in ('LRG', 'QSO', 'ELG'):
     reference_conditions[objtype] = reference_conditions['DARK']
+
 for objtype in ('MWS', 'BGS'):
     reference_conditions[objtype] = reference_conditions['BRIGHT']
 
@@ -208,9 +210,9 @@ def _calib_screen_uniformity(theta=None, radius=None):
         raise ValueError('must provide theta or radius')
 
 def simscience(targets, fiberassign, obsconditions='DARK', expid=None,
-    nspec=None, psfconvolve=True):
+               nspec=None, psfconvolve=True):
     '''
-    Simulates a new DESI exposure from surveysim+fiberassign+mock spectra
+    Simulates a new DESI exposure from surveysim + fiberassign + mock spectra.
 
     Args:
         targets (tuple): tuple of (flux[nspec,nwave], wave[nwave], meta[nspec])
@@ -291,7 +293,7 @@ def simscience(targets, fiberassign, obsconditions='DARK', expid=None,
         raise ValueError('obsconditions missing keys {}'.format(missing_keys))
 
     sim = simulate_spectra(wave, flux, fibermap=fibermap,
-        obsconditions=obsconditions, psfconvolve=psfconvolve)
+                           obsconditions=obsconditions, psfconvolve=psfconvolve)
 
     return sim, fibermap
 
@@ -353,9 +355,9 @@ def fibermeta2fibermap(fiberassign, meta):
 
 def simulate_spectra(wave, flux, fibermap=None, obsconditions=None, redshift=None,
                      dwave_out=None, seed=None, psfconvolve=True,
-                     specsim_config_file = "desi"):
+                     specsim_config_file = "desi", fiberloss='fastsim'):
     '''
-    Simulates an exposure without reading/writing data files
+    Simulates an exposure without reading / writing data files.
 
     Args:
         wave (array): 1D wavelengths in Angstroms
@@ -403,14 +405,13 @@ def simulate_spectra(wave, flux, fibermap=None, obsconditions=None, redshift=Non
     if not isinstance(wave, u.Quantity):
         wave = wave * u.Angstrom
 
-    log.debug('loading specsim desi config {}'.format(specsim_config_file))
+    log.debug('** loading specsim config ** {}'.format(specsim_config_file))
     config = _specsim_config_for_wave(wave.to('Angstrom').value, dwave_out=dwave_out, specsim_config_file=specsim_config_file)
 
     #- Create simulator
-    log.debug('creating specsim desi simulator')
+    log.debug('creating specsim %s simulator' % specsim_config_file)
     # desi = specsim.simulator.Simulator(config, num_fibers=nspec)
-    desi = desisim.specsim.get_simulator(config, num_fibers=nspec,
-        camera_output=psfconvolve)
+    desi   = desisim.specsim.get_simulator(config, num_fibers=nspec, camera_output=psfconvolve)
 
     if obsconditions is None:
         log.warning('Assuming DARK conditions')
@@ -428,6 +429,7 @@ def simulate_spectra(wave, flux, fibermap=None, obsconditions=None, redshift=Non
     try:
         desi.observation.exposure_start = astropy.time.Time(obsconditions['MJD'], format='mjd')
         log.info('exposure_start {}'.format(desi.observation.exposure_start.utc.isot))
+
     except KeyError:
         log.info('MJD not in obsconditions, using DATE-OBS {}'.format(desi.observation.exposure_start.utc.isot))
 
@@ -437,6 +439,7 @@ def simulate_spectra(wave, flux, fibermap=None, obsconditions=None, redshift=Non
 
     #- Set fiber locations from meta Table or default fiberpos
     fiberpos = desimodel.io.load_fiberpos()
+
     if fibermap is not None and len(fiberpos) != len(fibermap):
         ii = np.in1d(fiberpos['FIBER'], fibermap['FIBER'])
         fiberpos = fiberpos[ii]
@@ -450,15 +453,19 @@ def simulate_spectra(wave, flux, fibermap=None, obsconditions=None, redshift=Non
 
     #- Extract fiber locations from meta Table -> xy[nspec,2]
     assert np.all(fibermap['FIBER'] == fiberpos['FIBER'][0:nspec])
+
     if 'XFOCAL_DESIGN' in fibermap.dtype.names:
         xy = np.vstack([fibermap['XFOCAL_DESIGN'], fibermap['YFOCAL_DESIGN']]).T * u.mm
+
     elif 'X' in fibermap.dtype.names:
         xy = np.vstack([fibermap['X'], fibermap['Y']]).T * u.mm
+
     else:
         xy = np.vstack([fiberpos['X'], fiberpos['Y']]).T * u.mm
 
     if 'TARGETID' in fibermap.dtype.names:
         unassigned = (fibermap['TARGETID'] == -1)
+
         if np.any(unassigned):
             #- see https://github.com/astropy/astropy/issues/5961
             #- for the units -> array -> units trick
@@ -471,14 +478,16 @@ def simulate_spectra(wave, flux, fibermap=None, obsconditions=None, redshift=Non
     # source types are sky elg lrg qso bgs star , they
     # are only used in specsim.fiberloss for the desi.instrument.fiberloss_method="table" method
 
-    desi.instrument.fiberloss_method = 'fastsim'
-
+    desi.instrument.fiberloss_method = fiberloss
+    
     log.debug('running simulation with {} fiber loss method'.format(desi.instrument.fiberloss_method))
 
     unique_source_types = set(source_types)
     comment_line="source types:"
+
     for u in set(source_types) :
         comment_line+=" {} {}".format(np.sum(source_types==u),u)
+
     log.debug(comment_line)
 
     source_fraction=None
@@ -486,15 +495,15 @@ def simulate_spectra(wave, flux, fibermap=None, obsconditions=None, redshift=Non
     source_minor_major_axis_ratio=None
     source_position_angle=None
 
-    if desi.instrument.fiberloss_method == 'fastsim' or desi.instrument.fiberloss_method == 'galsim' :
+    if desi.instrument.fiberloss_method == 'fastsim' or desi.instrument.fiberloss_method == 'galsim':
         # the following parameters are used only with fastsim and galsim methods
-
         elgs=(source_types=="elg")
         lrgs=(source_types=="lrg")
         bgss=(source_types=="bgs")
 
         if np.sum(lrgs)>0 or np.sum(elgs)>0:
             log.warning("the half light radii are fixed here for LRGs and ELGs (and not magnitude or redshift dependent)")
+
         if np.sum(bgss)>0 and redshift is None:
             log.warning("the half light radii are fixed here for BGS (as redshifts weren't supplied)")
 
@@ -536,6 +545,7 @@ def simulate_spectra(wave, flux, fibermap=None, obsconditions=None, redshift=Non
         # Convert to angular size of the objects in this sample with given redshifts
         if redshift is None:
             angscales = np.ones(np.sum(bgss))
+
         else:
             bgs_redshifts = redshift[bgss]
             # Avoid infinities
@@ -569,14 +579,22 @@ def simulate_spectra(wave, flux, fibermap=None, obsconditions=None, redshift=Non
     #- See https://github.com/desihub/specsim/issues/83
     randstate = np.random.get_state()
     np.random.seed(seed)
-    desi.simulate(source_fluxes=flux, focal_positions=xy, source_types=source_types,
+
+    if specsim_config_file == 'pfs':
+      focal_positions = None
+
+    else:
+      focal_positions = xy
+
+    desi.simulate(source_fluxes=flux, focal_positions=focal_positions, source_types=source_types,
                   source_fraction=source_fraction,
                   source_half_light_radius=source_half_light_radius,
                   source_minor_major_axis_ratio=source_minor_major_axis_ratio,
                   source_position_angle=source_position_angle)
+
     np.random.set_state(randstate)
 
-    return desi
+    return  desi
 
 def _specsim_config_for_wave(wave, dwave_out=None, specsim_config_file = "desi"):
     '''
@@ -611,6 +629,7 @@ def _specsim_config_for_wave(wave, dwave_out=None, specsim_config_file = "desi")
     config.instrument.cameras.z.constants.output_pixel_size = "{:.3f} Angstrom".format(dwave_out)
 
     config.update()
+
     return config
 
 def get_source_types(fibermap):

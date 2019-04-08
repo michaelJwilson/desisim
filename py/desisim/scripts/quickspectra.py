@@ -24,7 +24,8 @@ from desispec.resolution import Resolution
 import matplotlib.pyplot as plt
 
 def sim_spectra(wave, flux, program, spectra_filename, obsconditions=None,
-                sourcetype=None, targetid=None, redshift=None, expid=0, seed=0, skyerr=0.0, ra=None, dec=None, meta=None, fibermap_columns=None, fullsim=False,use_poisson=True):
+                sourcetype=None, targetid=None, redshift=None, expid=0, seed=0, skyerr=0.0, ra=None, dec=None, meta=None, fibermap_columns=None, fullsim=False,use_poisson=True,\
+                specsim_config_file = "desi", snr=None, TablePath=None, fiberloss='fastsim'):
     """
     Simulate spectra from an input set of wavelength and flux and writes a FITS file in the Spectra format that can
     be used as input to the redshift fitter.
@@ -47,7 +48,7 @@ def sim_spectra(wave, flux, program, spectra_filename, obsconditions=None,
         skyerr : fractional sky subtraction error
         ra : numpy array with targets RA (deg)
         dec : numpy array with targets Dec (deg)
-        meta : dictionnary, saved in primary fits header of the spectra file 
+        meta : dictionary, saved in primary fits header of the spectra file 
         fibermap_columns : add these columns to the fibermap
         fullsim : if True, write full simulation data in extra file per camera
         use_poisson : if False, do not use numpy.random.poisson to simulate the Poisson noise. This is useful to get reproducible random realizations.
@@ -111,11 +112,12 @@ def sim_spectra(wave, flux, program, spectra_filename, obsconditions=None,
             spectra_fibermap[s][tp] = frame_fibermap[s][tp]
  
     if ra is not None :
-        spectra_fibermap["TARGET_RA"] = ra
-        spectra_fibermap["FIBER_RA"]    = ra
+        spectra_fibermap["TARGET_RA"]  = ra
+        spectra_fibermap["FIBER_RA"]   = ra
+
     if dec is not None :
         spectra_fibermap["TARGET_DEC"] = dec
-        spectra_fibermap["FIBER_DEC"]    = dec
+        spectra_fibermap["FIBER_DEC"]  = dec
             
     if obsconditions is None:
         if program in ['dark', 'lrg', 'qso']:
@@ -133,13 +135,23 @@ def sim_spectra(wave, flux, program, spectra_filename, obsconditions=None,
             raise ValueError('obsconditions {} not in {}'.format(
                 obsconditions.upper(),
                 list(desisim.simexp.reference_conditions.keys())))
-    try:
-        params = desimodel.io.load_desiparams()
+
+    if (specsim_config_file.upper() == 'DESI') | (specsim_config_file.upper() == 'BEAST'):
+      try:
+        params  = desimodel.io.load_desiparams()
+
         wavemin = params['ccd']['b']['wavemin']
         wavemax = params['ccd']['z']['wavemax']
-    except KeyError:
+
+      except KeyError:
         wavemin = desimodel.io.load_throughput('b').wavemin
         wavemax = desimodel.io.load_throughput('z').wavemax
+
+    else:
+        wavemin = wave.min()
+        wavemax = wave.max() 
+
+        frame_fibermap = None
 
     if wave[0] > wavemin:
         log.warning('Minimum input wavelength {}>{}; padding with zeros'.format(
@@ -151,8 +163,9 @@ def sim_spectra(wave, flux, program, spectra_filename, obsconditions=None,
         fluxpad = np.zeros((flux.shape[0], len(wavepad)), dtype=flux.dtype)
         wave = np.concatenate([wavepad, wave])
         flux = np.hstack([fluxpad, flux])
+
         assert flux.shape[1] == len(wave)
-        assert np.allclose(dwave, np.diff(wave))
+        assert np.allclose(dwave, np.diff(wave), rtol=1.e-5)
         assert wave[0] <= wavemin
 
     if wave[-1] < wavemax:
@@ -164,8 +177,9 @@ def sim_spectra(wave, flux, program, spectra_filename, obsconditions=None,
         fluxpad = np.zeros((flux.shape[0], len(wavepad)), dtype=flux.dtype)
         wave = np.concatenate([wave, wavepad])
         flux = np.hstack([flux, fluxpad])
+
         assert flux.shape[1] == len(wave)
-        assert np.allclose(dwave, np.diff(wave))
+        assert np.allclose(dwave, np.diff(wave), rtol=1.e-5)
         assert wavemax <= wave[-1]
 
     ii = (wavemin <= wave) & (wave <= wavemax)
@@ -177,7 +191,7 @@ def sim_spectra(wave, flux, program, spectra_filename, obsconditions=None,
 
     sim = desisim.simexp.simulate_spectra(wave, flux, fibermap=frame_fibermap,
         obsconditions=obsconditions, redshift=redshift, seed=seed,
-        psfconvolve=True)
+                                          psfconvolve=True, specsim_config_file = specsim_config_file, fiberloss=fiberloss)
 
     random_state = np.random.RandomState(seed)
     sim.generate_random_noise(random_state,use_poisson=use_poisson)
@@ -186,12 +200,87 @@ def sim_spectra(wave, flux, program, spectra_filename, obsconditions=None,
     specdata = None
 
     resolution={}
+
     for camera in sim.instrument.cameras:
         R = Resolution(camera.get_output_resolution_matrix())
         resolution[camera.name] = np.tile(R.to_fits_array(), [nspec, 1, 1])
 
-    skyscale = skyerr * random_state.normal(size=sim.num_fibers)
+    if snr is not None:
+      import pylab as pl
+      import astropy.constants as const
+      from redrock.rebin import trapz_rebin
+      from astropy.table import  Table, Column
+    
 
+      print('Solving for cumulative SNR (across lambda).')
+
+      ## Save input path. 
+      snr_path = snr
+      
+      ## Gal Maker Meta Astropy Table.                                                                                                                                                                                          
+      galmeta    = Table.read(snr_path, format='ascii')
+
+      ## Redefine as S/N for each input galaxy.
+      features   = ['Lya', 'OII', '4000A', 'Ha', 'all'] 
+      centres    = [1216., 3728.,   4000., 6563., None]
+
+      linewidth  = 200. ## u.km / u.s
+      dlambda    = linewidth / const.c.to('km/s').value / 2. ## [-1, 1]
+
+      snr        =  {}
+
+      for mm, feature in enumerate(features):
+          snr[feature] = [centres[mm], np.zeros_like(flux[:,0].value)]
+
+      ##  For all cameras. 
+      for ii, table in enumerate(sim.camera_output):            
+        _wave  =  table['wavelength'].astype(float)
+
+        dwave  =  _wave[1] - _wave[0]
+
+        wmin   =  _wave.min()
+        wmax   =  _wave.max()
+
+        incam  = ((wmin - dwave) * u.AA < wave) & (wave < (wmax + dwave) * u.AA)
+
+        ##  For all input spectra. 
+        for kk in np.arange(len(flux[:,0])):
+          redshift =  galmeta['REDSHIFT'][kk] 
+
+          ##  cut to only flux dispersed to camera wavelengths.  
+          _flux    =  flux[kk, incam]
+
+          ##  Account for throughput.
+          ##  pl.plot(wave[incam], _flux * sim.instrument.cameras[ii].throughput[incam],  '-', label='rebinned * T')
+
+          ##  rebin each model flux onto the camera wavelengths.
+          _flux    =  trapz_rebin(wave[incam].value, _flux, _wave)
+
+          ##  Account for resolution.
+          R        = Resolution(sim.instrument.cameras[ii].get_output_resolution_matrix())
+          _Rflux   = R.dot(_flux)
+
+          snr['all'][1][kk] += np.sum(_flux * np.sqrt(table['flux_inverse_variance'].T.astype(float)[kk]))
+
+          for feature in ['Lya', 'OII', '4000A', 'Ha']:
+              feature_cut  =  (snr[feature][0] * (1. + redshift) * (1. - dlambda) < _wave) & (_wave < snr[feature][0] * (1. + redshift) * (1. + dlambda))
+              snr[feature][1][kk] +=  np.sum(_flux[feature_cut] * np.sqrt(table['flux_inverse_variance'].T.astype(float)[kk][feature_cut]))
+
+              ## print(ii, feature, redshift, np.sum(_flux[feature_cut] * np.sqrt(table['flux_inverse_variance'].T.astype(float)[kk][feature_cut])),\                     ## snr[feature][1][kk])
+      
+      for feature in features:
+          col = 'SNR-' + feature + '-' + specsim_config_file + '-' + '%d' % np.round(obsconditions['EXPTIME']).astype(np.int)
+          
+          ## meta.remove_column(col)
+          galmeta[col] = snr[feature][1]
+          
+      print(galmeta)
+      
+      ##  Rewrite Table with SNR
+      ##  galmeta.write(snr_path, format='ascii', overwrite=True)
+      
+    skyscale = skyerr * random_state.normal(size=sim.num_fibers)
+    
     if fullsim :
         for table in sim.camera_output :
             band  = table.meta['name'].strip()[0]
@@ -208,12 +297,14 @@ def sim_spectra(wave, flux, program, spectra_filename, obsconditions=None,
 
         ivar = table['flux_inverse_variance'].T.astype(float)
         
-        band  = table.meta['name'].strip()[0]
+        band = table.meta['name'].strip()[0]
         
         flux = flux * scale
         ivar = ivar / scale**2
-        mask  = np.zeros(flux.shape).astype(int)
+        mask = np.zeros(flux.shape).astype(int)
         
+        meta = {'TablePath':  TablePath}
+
         spec = Spectra([band], {band : wave}, {band : flux}, {band : ivar}, 
                        resolution_data={band : resolution[band]}, 
                        mask={band : mask}, 
@@ -223,17 +314,16 @@ def sim_spectra(wave, flux, program, spectra_filename, obsconditions=None,
         
         if specdata is None :
             specdata = spec
-        else :
+        else:
             specdata.update(spec)
     
     desispec.io.write_spectra(spectra_filename, specdata)        
-    log.info('Wrote '+spectra_filename)
+    log.info('Wrote ' + spectra_filename)
     
     # need to clear the simulation buffers that keeps growing otherwise
     # because of a different number of fibers each time ...
     desisim.specsim._simulators.clear()
     desisim.specsim._simdefaults.clear()
-
 
 def parse(options=None):
     parser=argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -244,7 +334,10 @@ def parse(options=None):
     parser.add_argument('-i','--input', type=str, required=True, help="Input spectra, ASCII or fits")
     parser.add_argument('-o','--out-spectra', type=str, required=True, help="Output spectra")
     #- Optional 
-    parser.add_argument('--repeat', type=int, default=1, help="Duplicate the input spectra to have several random realizations")
+    parser.add_argument('--repeat', type=int, default=1,  help="Duplicate the input spectra to have several random realizations")
+    parser.add_argument('--coadd',  type=int, default=1, help="Duplicate the input spectra to have several random realizations,\
+                                                               but with matched target ids to be treated as redrock coadd.")
+    parser.add_argument('--specsimconfig', type=str, default='desi', help="Load specsim config file for given survey, e.g. desi.")
     
     #- Optional observing conditions to override program defaults
     parser.add_argument('--program', type=str, default="DARK", help="Program (DARK, GRAY or BRIGHT)")
@@ -258,6 +351,8 @@ def parse(options=None):
     parser.add_argument('--source-type', type=str, default=None, help="Source type (for fiber loss), among sky,elg,lrg,qso,bgs,star")
     parser.add_argument('--skyerr', type=float, default=0.0, help="Fractional sky subtraction error")
     parser.add_argument('--fullsim',action='store_true',help="write full simulation data in extra file per camera, for debugging")
+    parser.add_argument('--snr', type=str, default=None, help="Store cumulative S/N value in GalMaker Astropy Table.  Provide path to Table.")
+    parser.add_argument('--fiberloss', type=str, default='fastsim', help="Fiberloss type; default is fastsim [table, galsim].")
 
     if options is None:
         args = parser.parse_args()
@@ -340,19 +435,31 @@ def main(args=None):
         
         input_wave = tmp[0]
         input_flux = tmp[1:]
+
+    ##  Number of input spectra.
+    nspec = input_flux.shape[0]
+
+    if args.coadd>1:
+        input_flux = np.tile(input_flux, (args.coadd, 1))
+        log.info("input flux shape (after coadd - negated repeat) = {}".format(input_flux.shape))
+
+        targetid   = np.tile(np.arange(nspec).astype(int), args.coadd)
     
-    if args.repeat>1 :
-        input_flux = np.tile(input_flux, (args.repeat,1 ))
+    elif args.repeat>1 :
+        targetid   = np.arange(nspec * args.repeat).astype(int)
+        input_flux = np.tile(input_flux, (args.repeat, 1))
+
         log.info("input flux shape (after repeat) = {}".format(input_flux.shape))
+
     else :
+        targetid   = np.arange(nspec).astype(int)
         log.info("input flux shape = {}".format(input_flux.shape))
     
     sourcetype=args.source_type
     if sourcetype is not None and len(input_flux.shape)>1 :
         nspec=input_flux.shape[0]
         sourcetype=np.array([sourcetype for i in range(nspec)])
-    
-    sim_spectra(input_wave, input_flux, args.program, obsconditions=obsconditions,
-        spectra_filename=args.out_spectra,seed=args.seed,sourcetype=sourcetype,
-        skyerr=args.skyerr,fullsim=args.fullsim)
-    
+
+    sim_spectra(input_wave, input_flux, args.program, obsconditions=obsconditions, spectra_filename=args.out_spectra,seed=args.seed,sourcetype=sourcetype,
+                skyerr=args.skyerr,fullsim=args.fullsim, specsim_config_file = args.specsimconfig, targetid=targetid,\
+                snr=args.snr, TablePath=args.input.split('/')[-1], fiberloss=args.fiberloss)
