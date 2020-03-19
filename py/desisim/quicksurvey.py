@@ -12,25 +12,30 @@ Directly depends on the following DESI products:
 * `fiberassign <https://github.com/desihub/fiberassign>`_
 '''
 
-from __future__ import absolute_import, division, print_function
+from   __future__ import absolute_import, division, print_function
 import gc
+import sys
 import numpy as np
 import os
 import shutil
 import glob
 import subprocess
-from astropy.table import Table, Column
+from   astropy.table import Table, Column
 import os.path
-from collections import Counter
-from time import time, asctime
+from   collections import Counter
+from   time import time, asctime
 import fitsio
+import desimodel
 import desitarget.mtl
-from desisim.quickcat import quickcat
-from astropy.table import join
-from desitarget.targetmask import desi_mask
+from   desisim.quickcat import quickcat
+from   astropy.table import join
+from   desitarget.targetmask import desi_mask
+from   desimodel.footprint import is_point_in_desi
+from   fitsio import FITS
 
 class SimSetup(object):
-    """Setup to simulate the DESI survey
+    """
+    Setup to simulate the DESI survey
 
     Attributes:
         output_path (str): Path to write the outputs.x
@@ -42,7 +47,8 @@ class SimSetup(object):
 
     """
     def __init__(self, output_path, targets_path, fiberassign, exposures, fiberassign_dates):
-        """Initializes all the paths, filenames and numbers describing DESI survey.
+        """
+        Initializes all the paths, filenames and numbers describing DESI survey.
 
         Args:
             output_path (str): Path to write the outputs.x
@@ -60,14 +66,13 @@ class SimSetup(object):
         self.tmp_output_path = os.path.join(self.output_path, 'tmp/')
         self.tmp_fiber_path = os.path.join(self.tmp_output_path, 'fiberassign/')
         self.surveyfile = os.path.join(self.tmp_output_path, 'survey_list.txt')
-        self.skyfile  = os.path.join(self.targets_path,'sky.fits')
+        self.skyfile  = os.path.join(self.targets_path,'skies.fits')
         self.stdfile  = os.path.join(self.targets_path,'std.fits')
         self.truthfile  = os.path.join(self.targets_path,'truth.fits')
         self.targetsfile = os.path.join(self.targets_path,'targets.fits')
         self.fibstatusfile = os.path.join(self.targets_path,'fiberstatus.ecsv')
         self.zcat_file = None
-        self.mtl_file = None
-
+        self.mtl_file = None        
         self.epoch_tiles = list()
         self.tilefiles = list()
         self.plan_tiles = list()
@@ -75,7 +80,18 @@ class SimSetup(object):
         self.epochs_list = list()
         self.n_epochs = 0
         self.start_epoch = 0
- 
+
+        os.environ['DESI_LOGLEVEL'] = 'DEBUG'
+        
+        ##
+        tiles = desimodel.io.load_tiles()
+        ids   = self.exposures['TILEID']
+
+        isin  = np.isin(tiles['TILEID'], ids)
+        
+        self.tiles = tiles[isin]
+        
+        ##  Nights of exposures. 
         dateobs = np.core.defchararray.decode(self.exposures['NIGHT'])
         dates = list()
         with open(fiberassign_dates) as fx:
@@ -87,16 +103,17 @@ class SimSetup(object):
                 year_mm_dd = yearmmdd[0:4]+yearmmdd[4:6]+yearmmdd[6:8]
                 dates.append(year_mm_dd)
 
-            #- add pre- and post- dates for date range bookkeeping
+        #- add pre- and post- dates for date range bookkeeping
         if dates[0] < min(dateobs[0]):
-                dates.insert(0, dateobs[0])
+          dates.insert(0, dateobs[0])
 
         dates.append('9999-99-99')
-        print(dates)
-
+        # print(dates)
+        
         self.n_epochs = len(dates) - 1
 
-
+        # print(dateobs)
+        
         for i in range(len(dates)-1):
             ii = (dateobs >= dates[i]) & (dateobs < dates[i+1])
             epoch_tiles = list()
@@ -104,11 +121,11 @@ class SimSetup(object):
                 if tile not in epoch_tiles:
                     epoch_tiles.append(tile)
             self.epoch_tiles.append(epoch_tiles)
-            print('tiles in epoch {} [{} to {}]: {}'.format(i,dates[i], dates[i+1], len(self.epoch_tiles[i])))
-
+            print('tiles in epoch {} [{} to {}]: {}'.format(i, dates[i], dates[i+1], len(self.epoch_tiles[i])))
 
     def create_directories(self):
-        """Creates output directories to store simulation results.
+        """
+        Creates output directories to store simulation results.
 
         """
         if not os.path.exists(self.output_path):
@@ -121,14 +138,16 @@ class SimSetup(object):
             os.makedirs(self.tmp_fiber_path)
 
     def cleanup_directories(self):
-        """Deletes files in the temporary output directory
+        """
+        Deletes files in the temporary output directory
 
         """
         if os.path.exists(self.tmp_output_path):
             shutil.rmtree(self.tmp_output_path)
 
     def epoch_data_exists(self, epoch_id=0):
-        """Check epoch directory for zcat.fits and mtl.fits files.
+        """
+        Check epoch directory for zcat.fits and mtl.fits files.
         """
         backup_path = os.path.join(self.output_path, '{}'.format(epoch_id))
         mtl_file = os.path.join(backup_path, 'mtl.fits')
@@ -141,7 +160,8 @@ class SimSetup(object):
 
         
     def backup_epoch_data(self, epoch_id=0):
-        """Deletes files in the temporary output directory
+        """
+        Deletes files in the temporary output directory
 
         Args:
             epoch_id (int): Epoch's ID to backup/copy from the output directory.
@@ -167,7 +187,8 @@ class SimSetup(object):
 
 
     def create_surveyfile(self, epoch):
-        """Creates text file of tiles survey_list.txt to be used by fiberassign
+        """
+        Creates text file of tiles survey_list.txt to be used by fiberassign
 
         Args:
             epoch (int) : epoch of tiles to write
@@ -182,18 +203,21 @@ class SimSetup(object):
         np.savetxt(surveyfile, tiles, fmt='%d')
         print("{} tiles to be included in fiberassign".format(len(tiles)))
 
+        return  len(tiles)
+        
     def update_observed_tiles(self, epoch):
-        """Creates the list of tilefiles to be gathered to build the redshift catalog.
-
+        """
+        Creates the list of tilefiles to be gathered to build the redshift catalog.
         """        
         self.tilefiles = list()
         tiles = self.epoch_tiles[epoch]
         for i in tiles:
-            tilename = os.path.join(self.tmp_fiber_path, 'tile-%06d.fits'%(i))
+            tilename = os.path.join(self.tmp_fiber_path, 'fiberassign-%06d.fits'%(i))
             # retain ability to use previous version of tile files
-            oldtilename = os.path.join(self.tmp_fiber_path, 'tile_%05d.fits'%(i))
+            oldtilename = os.path.join(self.tmp_fiber_path, 'tile-%05d.fits'%(i))
             if os.path.isfile(tilename):
                 self.tilefiles.append(tilename)
+
             elif os.path.isfile(oldtilename):
                 self.tilefiles.append(oldtilename)
             #else:
@@ -202,7 +226,8 @@ class SimSetup(object):
 
 
     def simulate_epoch(self, epoch, truth, targets, perfect=False, zcat=None):
-        """Core routine simulating a DESI epoch,
+        """
+        Core routine simulating a DESI epoch,
 
         Args:
             epoch (int): epoch to simulate
@@ -221,76 +246,137 @@ class SimSetup(object):
 
         # create the MTL file
         print("{} Starting MTL".format(asctime()))
+
         self.mtl_file = os.path.join(self.tmp_output_path, 'mtl.fits')
-        if zcat is None:
-            mtl = desitarget.mtl.make_mtl(targets)
-        else:
-            mtl = desitarget.mtl.make_mtl(targets, zcat)
+
+        if (zcat is None):
+          mtl = desitarget.mtl.make_mtl(targets, obscon='DARK|GRAY')
             
+        elif len(zcat) == 0:
+          mtl = desitarget.mtl.make_mtl(targets, obscon='DARK|GRAY')
+
+        else:
+          mtl = desitarget.mtl.make_mtl(targets, obscon='DARK|GRAY', zcat=zcat)
+
+        print("{} Writing MTL".format(asctime()))
+
+        
+        # fits = FITS(self.mtl_file, 'rw') 
+        # fits.write(mtl.as_array())
+        # fits.close()
+        
         mtl.write(self.mtl_file, overwrite=True)
+
         del mtl
+
         gc.collect()
+
         print("{} Finished MTL".format(asctime()))
                 
         # clean files and prepare fiberasign inputs
         tilefiles = sorted(glob.glob(self.tmp_fiber_path+'/tile*.fits'))
+
         if tilefiles:
             for tilefile in tilefiles:
                 os.remove(tilefile)
 
         # setup the tileids for the current observation epoch
-        self.create_surveyfile(epoch)
+        ntodo = self.create_surveyfile(epoch)
 
+        if ntodo > 0:        
+          # launch fiberassign
+          print("{} Launching fiberassign".format(asctime()))
 
-        # launch fiberassign
-        print("{} Launching fiberassign".format(asctime()))
-        f = open('fiberassign.log','a')
+          ##  f = open('fiberassign.log', 'a')
+
+          # '--stdstar',  self.stdfile  '--fibstatusfile',  self.fibstatusfile],
+          cmd = [self.fiberassign,
+                 '--mtl',  os.path.join(self.tmp_output_path, 'mtl.fits'),
+                 '--sky',  self.skyfile,
+                 '--surveytiles',  self.surveyfile,
+                 '--outdir',os.path.join(self.tmp_output_path, 'fiberassign'), '--overwrite']
+
+          cmd = ' '.join(x for x in cmd)
+          
+          print(cmd)
+          
+          p = subprocess.Popen(cmd, shell=True, stderr=subprocess.PIPE) 
+
+          while True:
+              out = p.stderr.read(1)
+              out = out.decode('utf-8')
+              
+              if out == '' and p.poll() != None:
+                  break
+
+              if out != '':
+                  sys.stdout.write(out)
+                  sys.stdout.flush()
+          
+          if p.returncode > 0:
+            raise ValueError('Assignment error.')
         
-        p = subprocess.call([self.fiberassign, 
-                             '--mtl',  os.path.join(self.tmp_output_path, 'mtl.fits'),
-                             '--stdstar',  self.stdfile,  
-                             '--sky',  self.skyfile, 
-                             '--surveytiles',  self.surveyfile,
-                             '--outdir',os.path.join(self.tmp_output_path, 'fiberassign'), 
-                             '--fibstatusfile',  self.fibstatusfile], 
-                            stdout=f)
+          print("{} Finished fiberassign".format(asctime()))
 
+          ##  f.close()
 
-        print("{} Finished fiberassign".format(asctime()))
-        f.close()
-
-        # create a list of fiberassign tiles to read and update zcat
+        else:
+          print("Skipping fiberassign for {} tiles.".format(ntodo))
+          
+        # create a list of fiberassign tiles to read and update zcat.
         self.update_observed_tiles(epoch)
 
-        #update obsconditions from progress_data
-#        progress_data = Table.read(self.progress_files[epoch + 1])
-#        ii = np.in1d(progress_data['TILEID'], self.observed_tiles)
-#        obsconditions = progress_data[ii]
+        # update obsconditions from progress_data
+        # progress_data = Table.read(self.progress_files[epoch + 1])
+        # ii = np.in1d(progress_data['TILEID'], self.observed_tiles)
+        # obsconditions = progress_data[ii]
         obsconditions = None
+
         print('tilefiles', len(self.tilefiles))
         
         # write the zcat, it uses the tilesfiles constructed in the last step
         self.zcat_file = os.path.join(self.tmp_output_path, 'zcat.fits')
+
         print("{} starting quickcat".format(asctime()))
+
         newzcat = quickcat(self.tilefiles, targets, truth, zcat=zcat,
                            obsconditions=obsconditions, perfect=perfect)
         print("{} writing zcat".format(asctime()))
+
         newzcat.write(self.zcat_file, format='fits', overwrite=True)
+
         print("{} Finished zcat".format(asctime()))
+
         del newzcat
+
         gc.collect()
+
         return 
 
 
     def simulate(self):
-        """Simulate the DESI setup described by a SimSetup object.
+        """
+        Simulate the DESI setup described by a SimSetup object.
         """
         self.create_directories()
 
-        truth = Table.read(os.path.join(self.targets_path,'truth.fits'))
-        targets = Table.read(os.path.join(self.targets_path,'targets.fits'))
+        print('Reading truth.')
+        
+        truth = fitsio.read(os.path.join(self.targets_path,'truth.fits'))
+        
+        print('Reading targets.')
 
-        print(truth.keys())
+        targets = fitsio.read(os.path.join(self.targets_path,'targets.fits'))
+
+        # Cut to observed tiles.        
+        isin    = is_point_in_desi(self.tiles, targets['RA'], targets['DEC']) 
+
+        targets = targets[isin]
+        truth   =   truth[isin] 
+
+        # print(isin)
+        # print(len(targets), len(truth))
+        
         #- Drop columns that aren't needed to save memory while manipulating
         # truth.remove_columns(['SEED', 'MAG', 'FLUX_G', 'FLUX_R', 'FLUX_Z', 'FLUX_W1', 'FLUX_W2', 'HBETAFLUX', 'TEFF', 'LOGG', 'FEH'])
         # targets.remove_columns([ 'SHAPEEXP_R', 'SHAPEEXP_E1', 'SHAPEEXP_E2', 'SHAPEDEV_R',
@@ -298,39 +384,43 @@ class SimSetup(object):
         #                         'MW_TRANSMISSION_G','MW_TRANSMISSION_R','MW_TRANSMISSION_Z', 'MW_TRANSMISSION_W1', 'MW_TRANSMISSION_W2'])
 
         gc.collect()
-        if 'MOCKID' in truth.colnames:
-            truth.remove_column('MOCKID')
 
+        names = list(truth.dtype.names)
+        
+        if 'MOCKID' in names:
+            names.remove('MOCKID')
+            
+            truth = truth[names]
 
         for epoch in range(self.start_epoch, self.n_epochs):
             print('--- Epoch {} ---'.format(epoch))
             
-            if not self.epoch_data_exists(epoch_id=epoch):
-                
+            if not self.epoch_data_exists(epoch_id=epoch):       
                 # Initializes mtl and zcat
                 if epoch == 0:
                     zcat = None
+
                 else:
                     print('INFO: Running Epoch {}'.format(epoch))
                     print('INFO: reading zcat from previous epoch')
-                    epochdir = os.path.join(self.output_path, str(epoch-1))
-                    zcat = Table.read(os.path.join(epochdir, 'zcat.fits'))
+                    epochdir = os.path.join(self.output_path, str(epoch - 1))
+                    zcat     = Table.read(os.path.join(epochdir, 'zcat.fits'))
 
-                # Update mtl and zcat
+                # Update mtl and zcat.
                 self.simulate_epoch(epoch, truth, targets, perfect=True, zcat=zcat)
 
                 # copy mtl and zcat to epoch directory
                 self.backup_epoch_data(epoch_id=epoch)
+
                 del zcat
+
                 gc.collect()
+                
             else:
                 print('--- Epoch {} Already Exists ---'.format(epoch))
                 
         self.cleanup_directories()
-
-
-
-
+        
 def print_efficiency_stats(truth, mtl_initial, zcat):
     print('Overall efficiency')
     tmp_init = join(mtl_initial, truth, keys='TARGETID')
