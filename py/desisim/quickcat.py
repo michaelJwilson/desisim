@@ -566,7 +566,7 @@ def quickcat(tilefiles, targets, truth, exposures, zcat=None, mtl=None, perfect=
     Generates quick output zcatalog
 
     Args:
-        tilefiles : list of fiberassign tile files that were observed
+        tilefiles : list of fiberassign tile files that were completed.
         targets : astropy Table of targets
         truth : astropy Table of input truth with columns TARGETID, TRUEZ, and TRUETYPE
         zcat (optional): input zcatalog Table from previous observations
@@ -578,6 +578,10 @@ def quickcat(tilefiles, targets, truth, exposures, zcat=None, mtl=None, perfect=
         zcatalog astropy Table based upon input truth, plus ZERR, ZWARN,
         NUMOBS, and TYPE columns
     """
+    #-
+    if len(tilefiles) == 0:
+        return  zcat, None
+
     #- convert to Table for easier manipulation
     if not isinstance(truth, Table):
         truth = Table(truth)
@@ -737,7 +741,7 @@ def quickcat(tilefiles, targets, truth, exposures, zcat=None, mtl=None, perfect=
         zcat.sort(keys='TARGETID')
         newzcat.sort(keys='TARGETID') 
         
-        #- targets that are in both zcat and newzcat
+        #- targets that are in both zcat and newzcat.
         repeats = np.in1d(zcat['TARGETID'], newzcat['TARGETID'])
 
         #- update numobs in both zcat and newzcat

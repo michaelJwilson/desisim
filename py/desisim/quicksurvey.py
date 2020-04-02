@@ -353,7 +353,7 @@ class SimSetup(object):
 
         print('tilefiles', len(self.tilefiles))
         
-        # write the zcat, it uses the tilesfiles constructed in the last step
+        # write the zcat, it uses the tilesfiles constructed in the last step.
         self.zcat_file = os.path.join(self.tmp_output_path, 'zcat.fits')
 
         print("{} starting quickcat".format(asctime()))
@@ -361,19 +361,20 @@ class SimSetup(object):
         newzcat, fibermaps = quickcat(self.tilefiles, targets, truth, zcat=zcat,
                                       exposures=exposures, perfect=perfect)
 
-        for key in fibermaps.keys():
-         print('Writing {}.'.format(key))   
+        if fibermaps is not None:
+          for key in fibermaps.keys():
+            print('Writing {}.'.format(key))   
             
-         (fpath, fmap) = fibermaps[key]
+            (fpath, fmap) = fibermaps[key]
+        
+            fpath         = self.output_path + '/{}/fiberassign/{}'.format(epoch, fpath)
 
-         fpath         = self.output_path + '/{}/fiberassign/{}'.format(epoch, fpath)
-
-         dirname       = os.path.dirname(fpath) 
-
-         if not os.path.exists(fpath):
-           Path(dirname).mkdir(parents=True, exist_ok=True)
+            dirname       = os.path.dirname(fpath) 
+ 
+            if not os.path.exists(fpath):
+              Path(dirname).mkdir(parents=True, exist_ok=True)
          
-           fmap.write(fpath, format='fits', overwrite=True)
+              fmap.write(fpath, format='fits', overwrite=True)
 
         if not os.path.exists(self.zcat_file):
           print("{} writing zcat".format(asctime()))
