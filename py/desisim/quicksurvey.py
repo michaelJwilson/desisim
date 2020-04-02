@@ -362,6 +362,8 @@ class SimSetup(object):
                                       exposures=exposures, perfect=perfect)
 
         for key in fibermaps.keys():
+         print('Writing {}.'.format(key))   
+            
          (fpath, fmap) = fibermaps[key]
 
          fpath         = self.output_path + '/{}/fiberassign/{}'.format(epoch, fpath)
