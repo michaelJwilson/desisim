@@ -647,7 +647,7 @@ def quickcat(tilefiles, targets, truth, exposures, zcat=None, mtl=None, perfect=
         
         # Header info.
         exposure                 = Table(exposures)[exposures['TILEID'] == tileidnew]
-
+        
         # 'PROGRAM'
         for x in ['NIGHT', 'EXPID', 'TILEID', 'AIRMASS', 'EXPTIME', 'SEEING', 'MJD']:
           fibmap.meta[x]         = exposure[x][0]

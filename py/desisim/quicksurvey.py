@@ -48,7 +48,7 @@ class SimSetup(object):
         n_epochs (int): number of epochs to be simulated.
 
     """
-    def __init__(self, output_path, targets_path, fiberassign, exposures, fiberassign_dates):
+    def __init__(self, output_path, targets_path, fiberassign, exposures, fiberassignlog):
         """
         Initializes all the paths, filenames and numbers describing DESI survey.
 
@@ -58,7 +58,7 @@ class SimSetup(object):
             fiberassign (str): Name of the fiberassign executable
             template_fiberassign (str): Filename of the template input for fiberassign
             exposures (stri): exposures.fits file summarazing surveysim results
-            fiberassign_dates (str): ascii file with the dates to run fiberassign.
+            fiberassignlog (str): .fits file with the fiberassign run log.
         """
         self.output_path = output_path
         self.targets_path = targets_path
@@ -82,7 +82,7 @@ class SimSetup(object):
         self.epochs_list = list()
         self.n_epochs = 0
         self.start_epoch = 0
-
+        
         os.environ['DESI_LOGLEVEL'] = 'DEBUG'
         
         ##
@@ -93,38 +93,37 @@ class SimSetup(object):
         
         self.tiles = tiles[isin]
         
-        ##  Nights of exposures. 
-        dateobs = np.core.defchararray.decode(self.exposures['NIGHT'])
-        dates = list()
-        with open(fiberassign_dates) as fx:
-            for line in fx:
-                line = line.strip()
-                if line.startswith('#') or len(line) < 2:
-                    continue
-                yearmmdd = line.replace('-', '')
-                year_mm_dd = yearmmdd[0:4]+yearmmdd[4:6]+yearmmdd[6:8]
-                dates.append(year_mm_dd)
+        assignlog = fitsio.read(fiberassignlog)
 
-        #- add pre- and post- dates for date range bookkeeping
-        if dates[0] < min(dateobs[0]):
-          dates.insert(0, dateobs[0])
-
-        dates.append('9999-99-99')
-        # print(dates)
+        ## 
+        ids       = assignlog['TILEID']
+        dates     = list(assignlog['ASSIGNDATE'])
+        dates     = [date.decode('utf-8').replace('-', '') for date in dates]
+        dates     = np.array(dates)
         
-        self.n_epochs = len(dates) - 1
+        udates    = [str(x) for x in np.unique(dates)]
+        udates.remove('99999999')
 
-        # print(dateobs)
+        self.assigndates = np.array([x[0:4] + '-' + x[4:6] + '-' + x[6:8] + 'T12:00:00' for x in udates])
         
-        for i in range(len(dates)-1):
-            ii = (dateobs >= dates[i]) & (dateobs < dates[i+1])
-            epoch_tiles = list()
-            for tile in self.exposures['TILEID'][ii]:
-                if tile not in epoch_tiles:
-                    epoch_tiles.append(tile)
-            self.epoch_tiles.append(epoch_tiles)
-            print('tiles in epoch {} [{} to {}]: {}'.format(i, dates[i], dates[i+1], len(self.epoch_tiles[i])))
+        ##  Udates must be chronologically increasing.  
+        ##  assert  np.all(np.diff([np.int(x) for x in dates]) > 0) 
+        
+        self.n_epochs = len(udates)
+        
+        for i, udate in enumerate(udates):
+          ##  Must be completed. 
+          ii      =  (dates == udate) & np.isin(ids, self.exposures['TILEID'])
+          
+          self.epoch_tiles.append(list(ids[ii]))
+          
+          print('Tiles assigned on date {} (start of epoch {: 3d}): {}'.format(udate, i, len(self.epoch_tiles[i])))
 
+        print('\nRemaining unassigned tiles: {}.\n'.format(np.count_nonzero(dates == '99999999')))
+          
+        ##  Must only be completed exposures. 
+        assert  np.all(self.exposures['SNR2FRAC'] > 1.0)                                       
+                                         
     def create_directories(self):
         """
         Creates output directories to store simulation results.
@@ -304,7 +303,8 @@ class SimSetup(object):
                  '--mtl',  os.path.join(self.tmp_output_path, 'mtl.fits'),
                  '--sky',  self.skyfile,
                  '--surveytiles',  self.surveyfile,
-                 '--outdir',os.path.join(self.tmp_output_path, 'fiberassign')]
+                 '--rundate', self.assigndates[epoch],
+                 '--outdir', os.path.join(self.tmp_output_path, 'fiberassign')]
 
           if overwrite:
               cmd = cmd + ['--overwrite']
