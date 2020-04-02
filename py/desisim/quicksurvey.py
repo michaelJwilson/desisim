@@ -362,11 +362,11 @@ class SimSetup(object):
                                       exposures=exposures, perfect=perfect)
 
         if fibermaps is not None:
-          for key in fibermaps.keys():
-            print('Writing {}.'.format(key))   
-            
+          for key in fibermaps.keys():            
             (fpath, fmap) = fibermaps[key]
-        
+
+            print('Writing {}.'.format(fpath))
+            
             fpath         = self.output_path + '/{}/fiberassign/{}'.format(epoch, fpath)
 
             dirname       = os.path.dirname(fpath) 
