@@ -640,10 +640,10 @@ def quickcat(tilefiles, targets, truth, exposures, zcat=None, mtl=None, perfect=
         fibmap['NUM_ITER']       = np.ones_like(fibmap['FIBER_RA'], dtype=np.int16)
         fibmap['SPECTROID']      = fibassign['FIBER'][ii] // 500
 
-        fibmap['FIBSTATUS']      = np.zeros_like(fibassign['FIBER'][ii])
+        fibmap['FIBERSTATUS']    = np.zeros_like(fibassign['FIBER'][ii])
 
         # Shut off a spectrograph via FIBSTATUS. 
-        fibmap['FIBSTATUS'][fibmap['SPECTROID'] == 3] = 1 
+        fibmap['FIBERSTATUS'][fibmap['SPECTROID'] == 3] = 1 
         
         # Header info.
         exposure                 = Table(exposures)[exposures['TILEID'] == tileidnew]
