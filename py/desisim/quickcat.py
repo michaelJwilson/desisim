@@ -658,7 +658,9 @@ def quickcat(tilefiles, targets, truth, exposures, zcat=None, mtl=None, perfect=
         fibermaps[tileidnew]     = ('fibermap-{}.fits'.format(fibmap.meta['EXPID']), fibmap)
         
     tileids = np.array(tileids)
-        
+
+    print(tileids)
+    
     #- Trim obsconditions to just the tiles that were observed
     if exposures is not None:
         ii = np.in1d(exposures['TILEID'], tileids)
@@ -675,7 +677,12 @@ def quickcat(tilefiles, targets, truth, exposures, zcat=None, mtl=None, perfect=
         j = np.argsort(exposures['TILEID'])
         k = np.argsort(i)
         exposures = exposures[j[k]]
-        assert np.all(tileids == exposures['TILEID'])
+
+        print(tileids)
+
+        print(exposures)
+        
+        assert  np.all(tileids == exposures['TILEID'])
 
     else:
         # get the observational conditions for the current tilefiles

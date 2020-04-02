@@ -48,7 +48,7 @@ class SimSetup(object):
         n_epochs (int): number of epochs to be simulated.
 
     """
-    def __init__(self, output_path, targets_path, fiberassign, exposures, fiberassignlog):
+    def __init__(self, output_path, targets_path, fiberassign, exposures, fiberassignlog, footprint):
         """
         Initializes all the paths, filenames and numbers describing DESI survey.
 
@@ -73,6 +73,7 @@ class SimSetup(object):
         self.truthfile  = os.path.join(self.targets_path,'truth.fits')
         self.targetsfile = os.path.join(self.targets_path,'targets.fits')
         self.fibstatusfile = os.path.join(self.targets_path,'fiberstatus.ecsv')
+        self.footprintfile = footprint
         self.zcat_file = None
         self.mtl_file = None        
         self.epoch_tiles = list()
@@ -200,8 +201,10 @@ class SimSetup(object):
 
         # create survey list from mtl_epochs IDS
         surveyfile = os.path.join(self.tmp_output_path, "survey_list.txt")
-        tiles = self.epoch_tiles[epoch]
+        tiles      = self.epoch_tiles[epoch]
+
         np.savetxt(surveyfile, tiles, fmt='%d')
+
         print("{} tiles to be included in fiberassign".format(len(tiles)))
 
         return  len(tiles)
@@ -211,19 +214,25 @@ class SimSetup(object):
         Creates the list of tilefiles to be gathered to build the redshift catalog.
         """        
         self.tilefiles = list()
+
         tiles = self.epoch_tiles[epoch]
+
         for i in tiles:
-            tilename = os.path.join(self.tmp_fiber_path, 'fiberassign-%06d.fits'%(i))
+            tilename    = os.path.join(self.tmp_fiber_path, 'fiberassign-{:06d}.fits'.format(i))
+
             # retain ability to use previous version of tile files
-            oldtilename = os.path.join(self.tmp_fiber_path, 'tile-%05d.fits'%(i))
+            oldtilename = os.path.join(self.tmp_fiber_path, 'tile-%05d.fits'.format(i))
+
             if os.path.isfile(tilename):
                 self.tilefiles.append(tilename)
 
             elif os.path.isfile(oldtilename):
                 self.tilefiles.append(oldtilename)
-            #else:
-              #  print('Suggested but does not exist {}'.format(tilename))
-        print("{} {} tiles to gather in zcat".format(asctime(), len(self.tilefiles)))
+
+            else:
+              print('Suggested but does not exist {}'.format(tilename))
+
+        print("{} {} tiles to gather for zcat from {}.".format(asctime(), len(self.tilefiles), self.tmp_fiber_path))
 
 
     def simulate_epoch(self, epoch, truth, targets, exposures, perfect=False, zcat=None):
@@ -308,7 +317,9 @@ class SimSetup(object):
 
           if overwrite:
               cmd = cmd + ['--overwrite']
-          
+
+          if self.footprintfile is not None:
+              cmd = cmd + ['--footprint', self.footprintfile]
           
           cmd = ' '.join(x for x in cmd)
           
@@ -356,16 +367,16 @@ class SimSetup(object):
          fpath         = self.output_path + '/{}/fiberassign/{}'.format(epoch, fpath)
 
          dirname       = os.path.dirname(fpath) 
-         
-         Path(dirname).mkdir(parents=True, exist_ok=True)
-         
-         print(fpath)
-         
-         fmap.write(fpath, format='fits', overwrite=True)
-            
-        print("{} writing zcat".format(asctime()))
 
-        newzcat.write(self.zcat_file, format='fits', overwrite=True)
+         if not os.path.exists(fpath):
+           Path(dirname).mkdir(parents=True, exist_ok=True)
+         
+           fmap.write(fpath, format='fits', overwrite=True)
+
+        if not os.path.exists(self.zcat_file):
+          print("{} writing zcat".format(asctime()))
+
+          newzcat.write(self.zcat_file, format='fits', overwrite=True)
 
         print("{} Finished zcat".format(asctime()))
 

@@ -14,6 +14,7 @@ parser.add_argument("--fiberassign", "-f", help="Script for fiberassign", type=s
 #parser.add_argument("--template_fiberassign","-t",help="File containing template for fiberassign", type=str, required=True)
 parser.add_argument("--exposures","-E",help="exposures.fits file from surveysim", type=str, required=True)
 parser.add_argument("--fiberassignlog","-D", help="file with fiberassign log", type=str, required=True)
+parser.add_argument("--footprint", help="file with the footprint for fiberassign (FITS)", type=str, default=None)
 args = parser.parse_args()
 
 setup = qs.SimSetup(output_path = args.output_dir, 
@@ -21,7 +22,8 @@ setup = qs.SimSetup(output_path = args.output_dir,
                     fiberassign = args.fiberassign, 
                     #template_fiberassign = args.template_fiberassign, 
                     exposures = args.exposures,
-                    fiberassignlog = args.fiberassignlog
+                    fiberassignlog = args.fiberassignlog,
+                    footprint = args.footprint 
                     )
 
 setup.simulate()
