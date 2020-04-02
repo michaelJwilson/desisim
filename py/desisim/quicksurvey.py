@@ -32,6 +32,8 @@ from   astropy.table import join
 from   desitarget.targetmask import desi_mask
 from   desimodel.footprint import is_point_in_desi
 from   fitsio import FITS
+from   pathlib import Path
+
 
 class SimSetup(object):
     """
@@ -225,7 +227,7 @@ class SimSetup(object):
         print("{} {} tiles to gather in zcat".format(asctime(), len(self.tilefiles)))
 
 
-    def simulate_epoch(self, epoch, truth, targets, perfect=False, zcat=None):
+    def simulate_epoch(self, epoch, truth, targets, exposures, perfect=False, zcat=None):
         """
         Core routine simulating a DESI epoch,
 
@@ -264,8 +266,11 @@ class SimSetup(object):
         # fits = FITS(self.mtl_file, 'rw') 
         # fits.write(mtl.as_array())
         # fits.close()
-        
-        mtl.write(self.mtl_file, overwrite=True)
+
+        # log.warning('Not writing over .mtl.')
+
+        if not os.path.exists(self.mtl_file):
+          mtl.write(self.mtl_file, overwrite=False)
 
         del mtl
 
@@ -290,12 +295,21 @@ class SimSetup(object):
           ##  f = open('fiberassign.log', 'a')
 
           # '--stdstar',  self.stdfile  '--fibstatusfile',  self.fibstatusfile],
+          # '--overwrite'
+
+          # log.warning('Not overwriting fiberassign output')
+          overwrite = False
+
           cmd = [self.fiberassign,
                  '--mtl',  os.path.join(self.tmp_output_path, 'mtl.fits'),
                  '--sky',  self.skyfile,
                  '--surveytiles',  self.surveyfile,
-                 '--outdir',os.path.join(self.tmp_output_path, 'fiberassign'), '--overwrite']
+                 '--outdir',os.path.join(self.tmp_output_path, 'fiberassign')]
 
+          if overwrite:
+              cmd = cmd + ['--overwrite']
+          
+          
           cmd = ' '.join(x for x in cmd)
           
           print(cmd)
@@ -313,7 +327,7 @@ class SimSetup(object):
                   sys.stdout.write(out)
                   sys.stdout.flush()
           
-          if p.returncode > 0:
+          if overwrite & (p.returncode > 0):
             raise ValueError('Assignment error.')
         
           print("{} Finished fiberassign".format(asctime()))
@@ -326,12 +340,6 @@ class SimSetup(object):
         # create a list of fiberassign tiles to read and update zcat.
         self.update_observed_tiles(epoch)
 
-        # update obsconditions from progress_data
-        # progress_data = Table.read(self.progress_files[epoch + 1])
-        # ii = np.in1d(progress_data['TILEID'], self.observed_tiles)
-        # obsconditions = progress_data[ii]
-        obsconditions = None
-
         print('tilefiles', len(self.tilefiles))
         
         # write the zcat, it uses the tilesfiles constructed in the last step
@@ -339,8 +347,22 @@ class SimSetup(object):
 
         print("{} starting quickcat".format(asctime()))
 
-        newzcat = quickcat(self.tilefiles, targets, truth, zcat=zcat,
-                           obsconditions=obsconditions, perfect=perfect)
+        newzcat, fibermaps = quickcat(self.tilefiles, targets, truth, zcat=zcat,
+                                      exposures=exposures, perfect=perfect)
+
+        for key in fibermaps.keys():
+         (fpath, fmap) = fibermaps[key]
+
+         fpath         = self.output_path + '/{}/fiberassign/{}'.format(epoch, fpath)
+
+         dirname       = os.path.dirname(fpath) 
+         
+         Path(dirname).mkdir(parents=True, exist_ok=True)
+         
+         print(fpath)
+         
+         fmap.write(fpath, format='fits', overwrite=True)
+            
         print("{} writing zcat".format(asctime()))
 
         newzcat.write(self.zcat_file, format='fits', overwrite=True)
@@ -360,6 +382,8 @@ class SimSetup(object):
         """
         self.create_directories()
 
+        exposures = self.exposures
+        
         print('Reading truth.')
         
         truth = fitsio.read(os.path.join(self.targets_path,'truth.fits'))
@@ -407,7 +431,7 @@ class SimSetup(object):
                     zcat     = Table.read(os.path.join(epochdir, 'zcat.fits'))
 
                 # Update mtl and zcat.
-                self.simulate_epoch(epoch, truth, targets, perfect=True, zcat=zcat)
+                self.simulate_epoch(epoch, truth, targets, exposures, perfect=True, zcat=zcat)
 
                 # copy mtl and zcat to epoch directory
                 self.backup_epoch_data(epoch_id=epoch)

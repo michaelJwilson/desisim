@@ -22,6 +22,7 @@ import scipy.special as sp
 import desisim
 from desisim.targets import get_simtype
 
+from desispec.io.fibermap import empty_fibermap
 import astropy.constants
 c = astropy.constants.c.to('km/s').value
 
@@ -560,7 +561,7 @@ def get_median_obsconditions(tileids):
 
     return obsconditions
 
-def quickcat(tilefiles, targets, truth, zcat=None, obsconditions=None, perfect=False):
+def quickcat(tilefiles, targets, truth, exposures, zcat=None, mtl=None, perfect=False):
     """
     Generates quick output zcatalog
 
@@ -569,9 +570,9 @@ def quickcat(tilefiles, targets, truth, zcat=None, obsconditions=None, perfect=F
         targets : astropy Table of targets
         truth : astropy Table of input truth with columns TARGETID, TRUEZ, and TRUETYPE
         zcat (optional): input zcatalog Table from previous observations
-        obsconditions (optional): Table or ndarray with observing conditions from surveysim
+        exposures: Table or ndarray with completed exposures from surveysim
         perfect (optional): if True, treat spectro pipeline as perfect with input=output,
-            otherwise add noise and zwarn!=0 flags
+            otherwise add noise and zwarn !=0 flags.
 
     Returns:
         zcatalog astropy Table based upon input truth, plus ZERR, ZWARN,
@@ -581,15 +582,15 @@ def quickcat(tilefiles, targets, truth, zcat=None, obsconditions=None, perfect=F
     if not isinstance(truth, Table):
         truth = Table(truth)
 
-    #- Count how many times each target was observed for this set of tiles
+    #- Count how many times each target was observed for this set of tiles.
     log.info('{} QC Reading {} tiles'.format(asctime(), len(tilefiles)))
     nobs = Counter()
+    fibermaps = {}
     targets_in_tile = {}
     tileids = list()
     for infile in tilefiles:
-        
         fibassign, header = fits.getdata(infile, 'FIBERASSIGN', header=True)
- 
+        
         # hack needed here rnc 7/26/18
         if 'TILEID' in header:
             tileidnew = header['TILEID']
@@ -602,29 +603,84 @@ def quickcat(tilefiles, targets, truth, zcat=None, obsconditions=None, perfect=F
 
         tileids.append(tileidnew)
 
-        ii = (fibassign['TARGETID'] != -1)  #- targets with assignments
+        ii = (fibassign['TARGETID'] > -1)  #- targets with assignments
         nobs.update(fibassign['TARGETID'][ii])
         targets_in_tile[tileidnew] = fibassign['TARGETID'][ii]
 
-    #- Trim obsconditions to just the tiles that were observed
-    if obsconditions is not None:
-        ii = np.in1d(obsconditions['TILEID'], tileids)
-        if np.any(ii == False):
-            obsconditions = obsconditions[ii]
-        assert len(obsconditions) > 0
+        # Create a fibermap-like file.
+        # https://desidatamodel.readthedocs.io/en/latest/DESI_SPECTRO_DATA/NIGHT/EXPID/fibermap-EXPID.html#hdu1
+        nspec     = len(fibassign['TARGETID'][ii]) 
 
-    #- Sort obsconditions to match order of tiles
+        fibmap    = empty_fibermap(nspec)
+
+        fmap_cols = np.array([z for z in fibmap.columns])  
+
+        transfer  = fmap_cols[np.array([x in fibassign.names for x in fmap_cols])] 
+
+        for x in transfer:
+          fibmap[x] = fibassign[x][ii]
+
+        fibmap['SECONDARY_TARGET'] = np.zeros(nspec, dtype=np.int)
+
+        for x in ['FIBERFLUX_W1', 'FIBERFLUX_W2', 'FIBERTOTFLUX_W1', 'FIBERTOTFLUX_W2']:
+            fibmap[x] = np.zeros(nspec, dtype=np.float)
+            
+        for x in['RA', 'DEC']:
+          # 2 arcsecond positioning errors.
+          fibmap['FIBER_{}'.format(x)]      = fibassign['TARGET_{}'.format(x)][ii] + np.random.normal(0.0, 2. / 60. / 60., nspec)
+          fibmap['FIBER_{}_IVAR'.format(x)] = (1. / (2. / 60. / 60.)**2.) * np.ones_like(fibmap['FIBER_{}'.format(x)])
+          
+        fibmap['PLATEMAKER_X']   = fibassign['FIBERASSIGN_X'][ii]
+        fibmap['PLATEMAKER_Y']   = fibassign['FIBERASSIGN_Y'][ii]
+
+        fibmap['PLATEMAKER_RA']  = fibmap['FIBER_RA']
+        fibmap['PLATEMAKER_DEC'] = fibmap['FIBER_DEC']
+        
+        # Number of assignment moves to requirement. 
+        fibmap['NUM_ITER']       = np.ones_like(fibmap['FIBER_RA'], dtype=np.int16)
+        fibmap['SPECTROID']      = fibassign['FIBER'][ii] // 500
+
+        fibmap['FIBSTATUS']      = np.zeros_like(fibassign['FIBER'][ii])
+
+        # Shut off a spectrograph via FIBSTATUS. 
+        fibmap['FIBSTATUS'][fibmap['SPECTROID'] == 3] = 1 
+        
+        # Header info.
+        exposure                 = Table(exposures)[exposures['TILEID'] == tileidnew]
+
+        # 'PROGRAM'
+        for x in ['NIGHT', 'EXPID', 'TILEID', 'AIRMASS', 'EXPTIME', 'SEEING', 'MJD']:
+          fibmap.meta[x]         = exposure[x][0]
+
+        fibmap['FLAVOR'] = 'science'
+
+        ## 
+        fibermaps[tileidnew]     = ('fibermap-{}.fits'.format(fibmap.meta['EXPID']), fibmap)
+        
+    tileids = np.array(tileids)
+        
+    #- Trim obsconditions to just the tiles that were observed
+    if exposures is not None:
+        ii = np.in1d(exposures['TILEID'], tileids)
+        if np.any(ii == False):
+            exposures = exposures[ii]
+        assert len(exposures) > 0
+
+    #- Sort exposures to match order of tiles
     #- This might not be needed, but is fast for O(20k) tiles and may
     #- prevent future surprises if code expects them to be row aligned
-    tileids = np.array(tileids)
-    if (obsconditions is not None) and \
-       (np.any(tileids != obsconditions['TILEID'])):
+    if (exposures is not None) and \
+       (np.any(tileids != exposures['TILEID'])):
         i = np.argsort(tileids)
-        j = np.argsort(obsconditions['TILEID'])
+        j = np.argsort(exposures['TILEID'])
         k = np.argsort(i)
-        obsconditions = obsconditions[j[k]]
-        assert np.all(tileids == obsconditions['TILEID'])
+        exposures = exposures[j[k]]
+        assert np.all(tileids == exposures['TILEID'])
 
+    else:
+        # get the observational conditions for the current tilefiles
+        exposures = get_median_obsconditions(tileids)
+        
     #- Trim truth down to just ones that have already been observed
     log.info('{} QC Trimming truth to just observed targets'.format(asctime()))
     obs_targetids = np.array(list(nobs.keys()))
@@ -646,18 +702,17 @@ def quickcat(tilefiles, targets, truth, zcat=None, obsconditions=None, perfect=F
 
     #- Add ZERR and ZWARN
     log.info('{} QC Adding ZERR and ZWARN'.format(asctime()))
+
     nz = len(newzcat)
+
     if perfect:
         newzcat['Z'] = truth['TRUEZ'].copy()
         newzcat['ZERR'] = np.zeros(nz, dtype=np.float32)
         newzcat['ZWARN'] = np.zeros(nz, dtype=np.int32)
-    else:
-        # get the observational conditions for the current tilefiles
-        if obsconditions is None:
-            obsconditions = get_median_obsconditions(tileids)
 
+    else:
         # get the redshifts
-        z, zerr, zwarn = get_observed_redshifts(targets, truth, targets_in_tile, obsconditions)
+        z, zerr, zwarn = get_observed_redshifts(targets, truth, targets_in_tile, exposures=None)
         newzcat['Z'] = z  #- update with noisy redshift
         newzcat['ZERR'] = zerr
         newzcat['ZWARN'] = zwarn
@@ -715,6 +770,7 @@ def quickcat(tilefiles, targets, truth, zcat=None, obsconditions=None, perfect=F
     newzcat.meta['EXTNAME'] = 'ZCATALOG'
     
     #newzcat.sort(keys='TARGETID')
-
+    
     log.info('{} QC done'.format(asctime()))
-    return newzcat
+
+    return newzcat, fibermaps
