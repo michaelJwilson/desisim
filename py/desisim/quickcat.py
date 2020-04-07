@@ -717,7 +717,7 @@ def quickcat(tilefiles, targets, truth, exposures, zcat=None, mtl=None, perfect=
 
     else:
         # get the redshifts
-        z, zerr, zwarn = get_observed_redshifts(targets, truth, targets_in_tile, exposures=None)
+        z, zerr, zwarn = get_observed_redshifts(targets, truth, targets_in_tile, obsconditions=None)
         newzcat['Z'] = z  #- update with noisy redshift
         newzcat['ZERR'] = zerr
         newzcat['ZWARN'] = zwarn
