@@ -16,7 +16,7 @@ from time import asctime
 
 import numpy as np
 from astropy.io import fits
-from astropy.table import Table, Column, vstack
+from astropy.table import Table, Column, vstack, join
 import sys
 import scipy.special as sp
 import desisim
@@ -561,7 +561,7 @@ def get_median_obsconditions(tileids):
 
     return obsconditions
 
-def quickcat(tilefiles, targets, truth, exposures, zcat=None, mtl=None, perfect=False):
+def quickcat(tilefiles, targets, truth, exposures, zcat=None, mtl=None, perfect=False, summary=None):
     """
     Generates quick output zcatalog
 
@@ -570,7 +570,7 @@ def quickcat(tilefiles, targets, truth, exposures, zcat=None, mtl=None, perfect=
         targets : astropy Table of targets
         truth : astropy Table of input truth with columns TARGETID, TRUEZ, and TRUETYPE
         zcat (optional): input zcatalog Table from previous observations
-        exposures: Table or ndarray with completed exposures from surveysim
+        exposures: Table or ndarray with *completed* exposures from surveysim.
         perfect (optional): if True, treat spectro pipeline as perfect with input=output,
             otherwise add noise and zwarn !=0 flags.
 
@@ -578,26 +578,21 @@ def quickcat(tilefiles, targets, truth, exposures, zcat=None, mtl=None, perfect=
         zcatalog astropy Table based upon input truth, plus ZERR, ZWARN,
         NUMOBS, and TYPE columns
     """
-    #-
-    if len(tilefiles) == 0:
-        return  zcat, None
-
-    #- convert to Table for easier manipulation
-    if not isinstance(truth, Table):
-        truth = Table(truth)
-
     #- Count how many times each target was observed for this set of tiles.
     log.info('{} QC Reading {} tiles'.format(asctime(), len(tilefiles)))
     nobs = Counter()
     fibermaps = {}
     targets_in_tile = {}
     tileids = list()
+    fibstats = {}
+    
     for infile in tilefiles:
         fibassign, header = fits.getdata(infile, 'FIBERASSIGN', header=True)
         
         # hack needed here rnc 7/26/18
         if 'TILEID' in header:
             tileidnew = header['TILEID']
+
         else:
             fnew=infile.split('/')[-1]
             tileidnew=fnew.split("_")[-1]
@@ -605,63 +600,78 @@ def quickcat(tilefiles, targets, truth, exposures, zcat=None, mtl=None, perfect=
             log.error('TILEID missing from {} header'.format(fnew))
             log.error('{} -> TILEID {}'.format(infile, tileidnew))
 
-        tileids.append(tileidnew)
+        ##  Assigned tile must have completed.   
+        if np.any(exposures['TILEID'] == tileidnew):
+          tileids.append(tileidnew)
 
-        ii = (fibassign['TARGETID'] > -1)  #- targets with assignments
-        nobs.update(fibassign['TARGETID'][ii])
-        targets_in_tile[tileidnew] = fibassign['TARGETID'][ii]
+          ii        = (fibassign['TARGETID'] > -1)
+          
+          # Create a fibermap-like file.
+          # https://desidatamodel.readthedocs.io/en/latest/DESI_SPECTRO_DATA/NIGHT/EXPID/fibermap-EXPID.html#hdu1
+          nspec     = len(fibassign['TARGETID'][ii]) 
 
-        # Create a fibermap-like file.
-        # https://desidatamodel.readthedocs.io/en/latest/DESI_SPECTRO_DATA/NIGHT/EXPID/fibermap-EXPID.html#hdu1
-        nspec     = len(fibassign['TARGETID'][ii]) 
+          print('Creating fibermap for tile {}.'.format(tileidnew))
+          
+          fibmap    = empty_fibermap(nspec)
 
-        fibmap    = empty_fibermap(nspec)
+          fmap_cols = np.array([z for z in fibmap.columns])  
 
-        fmap_cols = np.array([z for z in fibmap.columns])  
+          transfer  = fmap_cols[np.array([x in fibassign.names for x in fmap_cols])] 
 
-        transfer  = fmap_cols[np.array([x in fibassign.names for x in fmap_cols])] 
+          for x in transfer:
+            # row matched with fibassign[ii]  
+            fibmap[x] = fibassign[x][ii]
 
-        for x in transfer:
-          fibmap[x] = fibassign[x][ii]
+          fibmap['SECONDARY_TARGET'] = np.zeros(nspec, dtype=np.int)
 
-        fibmap['SECONDARY_TARGET'] = np.zeros(nspec, dtype=np.int)
-
-        for x in ['FIBERFLUX_W1', 'FIBERFLUX_W2', 'FIBERTOTFLUX_W1', 'FIBERTOTFLUX_W2']:
+          for x in ['FIBERFLUX_W1', 'FIBERFLUX_W2', 'FIBERTOTFLUX_W1', 'FIBERTOTFLUX_W2']:
             fibmap[x] = np.zeros(nspec, dtype=np.float)
             
-        for x in['RA', 'DEC']:
-          # 2 arcsecond positioning errors.
-          fibmap['FIBER_{}'.format(x)]      = fibassign['TARGET_{}'.format(x)][ii] + np.random.normal(0.0, 2. / 60. / 60., nspec)
-          fibmap['FIBER_{}_IVAR'.format(x)] = (1. / (2. / 60. / 60.)**2.) * np.ones_like(fibmap['FIBER_{}'.format(x)])
-          
-        fibmap['PLATEMAKER_X']   = fibassign['FIBERASSIGN_X'][ii]
-        fibmap['PLATEMAKER_Y']   = fibassign['FIBERASSIGN_Y'][ii]
+          for x in['RA', 'DEC']:
+            # 2 arcsecond positioning errors.
+            fibmap['FIBER_{}'.format(x)]      = fibassign['TARGET_{}'.format(x)][ii] + np.random.normal(0.0, 2. / 60. / 60., nspec)
+            fibmap['FIBER_{}_IVAR'.format(x)] = (1. / (2. / 60. / 60.)**2.) * np.ones_like(fibmap['FIBER_{}'.format(x)])
+           
+          fibmap['PLATEMAKER_X']   = fibassign['FIBERASSIGN_X'][ii]
+          fibmap['PLATEMAKER_Y']   = fibassign['FIBERASSIGN_Y'][ii]
 
-        fibmap['PLATEMAKER_RA']  = fibmap['FIBER_RA']
-        fibmap['PLATEMAKER_DEC'] = fibmap['FIBER_DEC']
+          fibmap['PLATEMAKER_RA']  = fibmap['FIBER_RA']
+          fibmap['PLATEMAKER_DEC'] = fibmap['FIBER_DEC']
         
-        # Number of assignment moves to requirement. 
-        fibmap['NUM_ITER']       = np.ones_like(fibmap['FIBER_RA'], dtype=np.int16)
-        fibmap['SPECTROID']      = fibassign['FIBER'][ii] // 500
+          # Number of assignment moves to requirement. 
+          fibmap['NUM_ITER']       = np.ones_like(fibmap['FIBER_RA'], dtype=np.int16)
+          fibmap['SPECTROID']      = fibassign['FIBER'][ii] // 500
 
-        fibmap['FIBERSTATUS']    = np.zeros_like(fibassign['FIBER'][ii])
+          fibmap['FIBERSTATUS']    = np.zeros_like(fibassign['FIBER'][ii])
 
-        # Shut off a spectrograph via FIBSTATUS. 
-        fibmap['FIBERSTATUS'][fibmap['SPECTROID'] == 3] = 1 
+          # Shut off a spectrograph via FIBSTATUS. 
+          fibmap['FIBERSTATUS'][fibmap['SPECTROID'] == 3] = 1 
+         
+          # Header info.
+          exposure                 = Table(exposures)[exposures['TILEID'] == tileidnew]
         
-        # Header info.
-        exposure                 = Table(exposures)[exposures['TILEID'] == tileidnew]
-        
-        # 'PROGRAM'
-        for x in ['NIGHT', 'EXPID', 'TILEID', 'AIRMASS', 'EXPTIME', 'SEEING', 'MJD']:
-          fibmap.meta[x]         = exposure[x][0]
+          # 'PROGRAM'
+          for x in ['NIGHT', 'EXPID', 'TILEID', 'AIRMASS', 'EXPTIME', 'SEEING', 'MJD']:
+            fibmap.meta[x]         = exposure[x][0]
 
-        fibmap['FLAVOR'] = 'science'
+          fibmap['FLAVOR'] = 'science'
 
-        ## 
-        fibermaps[tileidnew]     = ('fibermap-{}.fits'.format(fibmap.meta['EXPID']), fibmap)
+          ## 
+          fibermaps[tileidnew]     = ('fibermap-{:08d}.fits'.format(fibmap.meta['EXPID']), fibmap)
+
+          ##  Update assigned target list, accounting for FIBERSTATUS.
+          nobs.update(fibmap['TARGETID'][fibmap['FIBERSTATUS'] == 0])
+          targets_in_tile[tileidnew] = fibmap['TARGETID'][fibmap['FIBERSTATUS'] == 0]
+                    
+        else:
+          print('Assigned {} tile was not completed.'.format(tileidnew))
         
     tileids = np.array(tileids)
+    
+    print('Reducing zcat from completed tiles: {}'.format(tileids))
+    
+    if len(tileids) == 0:
+        return  zcat, None
     
     #- Trim obsconditions to just the tiles that were observed
     if exposures is not None:
@@ -673,32 +683,55 @@ def quickcat(tilefiles, targets, truth, exposures, zcat=None, mtl=None, perfect=
     #- Sort exposures to match order of tiles
     #- This might not be needed, but is fast for O(20k) tiles and may
     #- prevent future surprises if code expects them to be row aligned
-    if (exposures is not None) and \
-       (np.any(tileids != exposures['TILEID'])):
-        i = np.argsort(tileids)
-        j = np.argsort(exposures['TILEID'])
-        k = np.argsort(i)
-        exposures = exposures[j[k]]
-        
-        assert  np.all(tileids == exposures['TILEID'])
+    if (exposures is not None):
+       if np.any(tileids != exposures['TILEID']):
+         i = np.argsort(tileids)
+         j = np.argsort(exposures['TILEID'])
+         k = np.argsort(i)
+
+         exposures = exposures[j[k]]
+
+         try:
+           assert  np.all(tileids == exposures['TILEID'])
+
+         except:
+           raise ValueError('Exposure sort failed.')
+
+         print('Exposures matched.')
 
     else:
         # get the observational conditions for the current tilefiles
+        print('Getting median obs. conditions.')
+        
         exposures = get_median_obsconditions(tileids)
         
-    #- Trim truth down to just ones that have already been observed
+    #- Trim truth down to just ones that have already been observed.
     log.info('{} QC Trimming truth to just observed targets'.format(asctime()))
-    obs_targetids = np.array(list(nobs.keys()))
-    iiobs = np.in1d(truth['TARGETID'], obs_targetids)
-    truth = truth[iiobs]
-    targets = targets[iiobs]
 
+    obs_targetids = np.array(list(nobs.keys()))
+
+    print('Found {} targets completed during this epoch.'.format(len(obs_targetids)))
+    
+    #- convert to Table for easier manipulation
+    if not isinstance(truth, Table):
+      truth = Table(truth)
+    
+    iiobs   = np.in1d(truth['TARGETID'], obs_targetids)
+
+    assert  np.all( truth['TARGETID'] == targets['TARGETID'] )
+
+    truth   = truth[iiobs]
+    targets = targets[iiobs]
+        
     #- Construct initial new z catalog
     log.info('{} QC Constructing new redshift catalog'.format(asctime()))
+
     newzcat = Table()
     newzcat['TARGETID'] = truth['TARGETID']
+
     if 'BRICKNAME' in truth.dtype.names:
         newzcat['BRICKNAME'] = truth['BRICKNAME']
+
     else:
         newzcat['BRICKNAME'] = np.zeros(len(truth), dtype=(str, 8))
 
@@ -718,18 +751,21 @@ def quickcat(tilefiles, targets, truth, exposures, zcat=None, mtl=None, perfect=
     else:
         # get the redshifts
         z, zerr, zwarn = get_observed_redshifts(targets, truth, targets_in_tile, obsconditions=None)
+
         newzcat['Z'] = z  #- update with noisy redshift
         newzcat['ZERR'] = zerr
         newzcat['ZWARN'] = zwarn
-
+        
     #- Add numobs column
     log.info('{} QC Adding NUMOBS column'.format(asctime()))
     newzcat.add_column(Column(name='NUMOBS', length=nz, dtype=np.int32))
+
     for i in range(nz):
         newzcat['NUMOBS'][i] = nobs[newzcat['TARGETID'][i]]
 
     #- Merge previous zcat with newzcat
     log.info('{} QC Merging previous zcat'.format(asctime()))
+
     if zcat is not None:
         #- don't modify original
         #- Note: this uses copy on write for the columns to be memory
@@ -762,13 +798,14 @@ def quickcat(tilefiles, targets, truth, exposures, zcat=None, mtl=None, perfect=
         newzcat = newzcat[~discard]
 
         #- Should be non-overlapping now
-        assert np.all(np.in1d(zcat['TARGETID'], newzcat['TARGETID']) == False)
+        assert  np.all(np.in1d(zcat['TARGETID'], newzcat['TARGETID']) == False)
 
         #- merge them
         newzcat = vstack([zcat, newzcat])
 
     #- check for duplicates
     targetids = newzcat['TARGETID']
+
     assert len(np.unique(targetids)) == len(targetids)
 
     #- Metadata for header
@@ -778,4 +815,4 @@ def quickcat(tilefiles, targets, truth, exposures, zcat=None, mtl=None, perfect=
     
     log.info('{} QC done'.format(asctime()))
 
-    return newzcat, fibermaps
+    return  newzcat, fibermaps
